@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wellfit"
+version = "0.1.0"
+description = "Effective chi2 (correlated pixels), systematic error floor, line tension and bootstrap errors for grid fits to spectra"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+authors = [{ name = "Alex Laroche" }]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["wellfit"]
