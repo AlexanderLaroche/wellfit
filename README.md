@@ -96,6 +96,10 @@ What replaces the grid steps:
   the best fit. `n_boot` therefore sets most of the cost.
 - The minimizer is yours, so no scipy dependency.
 
+Set `profile={'vsini': np.arange(...)}` to get stat errors from a Δchi2_eff = 1 profile scan instead of the
+curvature. At each value of the scanned parameter the others are refitted. The errors are asymmetric and correct at a
+physical bound such as v_macro = 0. Use it whenever the best fit is near a bound.
+
 For MCMC, use `wf.log_likelihood(residuals(theta), err, n_corr, sigma_sys)` in your sampler. That's
 -chi2_eff/2, so the posterior widths account for the correlated data.
 
@@ -103,6 +107,16 @@ For MCMC, use `wf.log_likelihood(residuals(theta), err, n_corr, sigma_sys)` in y
 
 `n_params` counts every fitted parameter, including nuisance parameters optimized separately for each model, such as
 a shift or a normalization.
+
+## Examples
+
+[`examples/`](examples) has two notebooks that fit v sin i and v_macro to four synthetic lines. The data have
+correlated noise, errors quoted too small, and one deliberately inconsistent line.
+
+- [`grid_example.ipynb`](examples/grid_example.ipynb): the grid stream.
+- [`optimizer_example.ipynb`](examples/optimizer_example.ipynb): the optimizer stream, with profile scans.
+
+Both compare the naive fit with wellfit. They need scipy and matplotlib.
 
 ## Tests
 

@@ -11,6 +11,7 @@ from .stats import chi2_eff, dof_eff, solve_sigma_sys, group_chi2_eff, posterior
 from .groups import leave_one_out, tension, bootstrap_weights, stratum_drop_weights, refit_weighted
 from .grid import grid_steps, snap, weighted_quantiles, stat_error, sys_error
 from .grid_fit import fit_grid, GridFit
-from .opt_fit import fit_optimizer, OptFit, log_likelihood, weighted_chi2_eff, hessian
+from .opt_fit import (fit_optimizer, OptFit, log_likelihood, weighted_chi2_eff, hessian, profile_scan,
+                      profile_errors)
 
 __version__ = "0.2.0"

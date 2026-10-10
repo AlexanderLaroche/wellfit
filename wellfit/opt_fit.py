@@ -8,7 +8,7 @@ from .groups import bootstrap_weights, stratum_drop_weights
 # minimizer. Every quantity of the grid stream has an analogue here, with the "argmin over the grid" replaced by a
 # refit:
 #   sigma_sys      -> alternate fitting and solving for sigma_sys until both are stable
-#   stat errors    -> curvature of chi2_eff at the best fit (covariance = 2 H^-1)
+#   stat errors    -> curvature of chi2_eff at the best fit (covariance = 2 H^-1), or a Delta chi2_eff = 1 profile scan
 #   tension, LOO   -> one refit per group left out
 #   sys errors     -> one refit per stratified bootstrap replicate over groups
 # Data points in no group (groups < 0) are always included.
@@ -40,6 +40,46 @@ def hessian(f, x, step):
                                 / (4 * step[i] * step[j])
     return H
 
+def profile_scan(residuals, minimize, theta, i, values, err, n_corr, sigma_sys=0.):
+    """
+    Profile of chi2_eff along parameter i: at each value, parameter i is fixed and the others refitted (started from
+    theta). Returns (chi2_eff (n_values,), theta at each value (n_values, n_params)).
+    """
+    theta = np.atleast_1d(np.asarray(theta, dtype=float))
+    others = np.flatnonzero(np.arange(theta.size) != i)
+    prof, thetas = np.empty(len(values)), np.empty((len(values), theta.size))
+    start = theta[others]
+    for k, v in enumerate(values):
+        def full(sub):
+            th = theta.copy(); th[i] = v; th[others] = sub
+            return th
+        if others.size:
+            start = np.atleast_1d(np.asarray(minimize(lambda sub: chi2_eff(residuals(full(sub)), err, n_corr, sigma_sys),
+                                                      start), dtype=float))
+        thetas[k] = full(start)
+        prof[k] = chi2_eff(residuals(thetas[k]), err, n_corr, sigma_sys)
+    return prof, thetas
+
+def profile_errors(values, prof, best_val, best_chi2=None, delta=1.):
+    """
+    Errors from a chi2_eff profile: where Delta chi2_eff crosses delta on each side of best_val (interpolated in
+    sqrt(Delta chi2_eff)), relative to the lower of best_chi2 and the profile minimum. Where the profile does not cross before the end of the
+    scan (e.g. a physical bound such as 0), the error reaches the scan edge, so a lower error equal to best_val -
+    values[0] at a bound of 0 means "consistent with 0". Returns (+err, -err).
+    """
+    values, prof = np.asarray(values, dtype=float), np.asarray(prof, dtype=float)
+    # interpolate sqrt(Delta chi2_eff), linear in the parameter for a parabolic profile
+    d = np.sqrt(np.maximum(prof - (prof.min() if best_chi2 is None else min(best_chi2, prof.min())), 0.)) - np.sqrt(delta)
+    def cross(idx):  # idx: profile indices walking away from the best value
+        for a, b in zip(idx[:-1], idx[1:]):
+            if d[a] <= 0 < d[b]:
+                return values[a] + (values[b] - values[a]) * (-d[a]) / (d[b] - d[a])
+        return values[idx[-1]]
+    up = np.flatnonzero(values >= best_val); dn = np.flatnonzero(values <= best_val)[::-1]
+    hi = cross(up) if up.size > 1 else values[-1]
+    lo = cross(dn) if dn.size > 1 else values[0]
+    return max(hi - best_val, 0.), max(best_val - lo, 0.)
+
 @dataclass
 class OptFit:
     n_corr: float
@@ -61,6 +101,7 @@ class OptFit:
     theta_boot: np.ndarray       # (n_boot, n_params) best fit in each bootstrap replicate
     theta_stratum: dict          # best fit leaving out each stratum
     results: dict = field(default_factory=dict)  # name -> (value, +stat, -stat, +sys, -sys)
+    profiles: dict = field(default_factory=dict) # name -> (values, chi2_eff profile) for the profiled parameters
 
     def summary(self):
         s = [f"n_data = {self.n_data}, n_corr = {self.n_corr:.2f} -> {self.n_data / self.n_corr:.1f} independent "
@@ -79,7 +120,7 @@ class OptFit:
 
 def fit_optimizer(residuals, minimize, theta0, err, n_corr, n_params=None, groups=None, param_names=None,
                   group_names=None, strata=None, n_boot=100, seed=0, fit_sigma_sys=True, step=None, max_iter=20,
-                  rtol_sys=1e-3):
+                  rtol_sys=1e-3, profile=None):
     """
     Full analysis of a fit with continuous parameters.
 
@@ -87,13 +128,17 @@ def fit_optimizer(residuals, minimize, theta0, err, n_corr, n_params=None, group
     minimize(objective, theta_start) -> best theta: any minimizer, e.g.
         lambda f, x0: scipy.optimize.minimize(f, x0, method='Nelder-Mead').x
         It is called once per sigma_sys iteration, group left out, stratum left out and bootstrap replicate (all
-        starting from the best fit), so n_boot sets most of the cost.
+        starting from the best fit), so n_boot sets most of the cost. Profile scans call it with the scanned
+        parameter removed (one fewer dimension), so anything per-parameter in it (bounds) must follow len(theta_start).
     err: data errors (n_data,); n_corr: correlation factor (wellfit.measure_n_corr / n_corr_from_residuals).
     n_params: number of fitted parameters (default len(theta0)); include nuisance parameters fitted inside residuals.
     groups: group index of every point (n_data,), 0..n_groups-1 (default: one group; no tension or sys errors).
     strata: stratum label of every group, for the stratified bootstrap (default: one stratum).
     step: finite-difference steps for the Hessian (default 1e-3 * max(|theta|, 1)); should be well below the errors
         but large enough to beat any numerical noise in residuals.
+    profile: {name: values} -> stat errors of these parameters from a chi2_eff profile scan (Delta chi2_eff = 1, the
+        other parameters refitted at each value) instead of the curvature: asymmetric, and correct at a physical bound
+        (start the scan at the bound). Use it whenever the best fit is near a bound or the curvature errors look odd.
     """
     theta0 = np.atleast_1d(np.asarray(theta0, dtype=float))
     err = np.asarray(err, dtype=float)
@@ -149,18 +194,27 @@ def fit_optimizer(residuals, minimize, theta0, err, n_corr, n_params=None, group
         theta_loo, tension = np.full((1, theta.size), np.nan), np.zeros(1)
         theta_boot, theta_stratum = np.empty((0, theta.size)), {}
 
+    profiles = {}
+    for k, vals in (profile or {}).items():
+        i = param_names.index(k)
+        profiles[k] = (np.asarray(vals, dtype=float),
+                       profile_scan(residuals, minimize, theta, i, vals, err, n_corr, sig)[0])
+
     results = {}
+    c2e_best = float(chi2_eff(R, err, n_corr, sig))
     for i, k in enumerate(param_names):
-        e = np.sqrt(cov[i, i])
+        ep = em = np.sqrt(cov[i, i])
+        if k in profiles:
+            ep, em = profile_errors(*profiles[k], theta[i], c2e_best)
         if theta_boot.shape[0]:
             q16, q84 = np.percentile(theta_boot[:, i], [16, 84])
             sp, sm = max(q84 - theta[i], 0.), max(theta[i] - q16, 0.)
         else:
             sp = sm = 0.
-        results[k] = (theta[i], e, e, sp, sm)
+        results[k] = (theta[i], ep, em, sp, sm)
 
     return OptFit(n_corr=n_corr, n_params=n_params, n_data=n_data, nu=dof_eff(n_data, n_params, n_corr), sigma_sys=sig,
                   theta=theta, chi2=float(chi2_eff(R, err)), chi2_eff=float(chi2_eff(R, err, n_corr, sig)), cov=cov,
                   param_names=param_names, group_names=group_names, strata=strata, chi2_eff_groups=C,
                   n_data_groups=np.bincount(groups[groups >= 0], minlength=n_groups), tension=tension,
-                  theta_loo=theta_loo, theta_boot=theta_boot, theta_stratum=theta_stratum, results=results)
+                  theta_loo=theta_loo, theta_boot=theta_boot, theta_stratum=theta_stratum, results=results, profiles=profiles)

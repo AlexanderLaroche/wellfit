@@ -103,3 +103,16 @@ def test_log_likelihood_is_minus_half_chi2_eff():
     R = np.array([1., -2., 0.5]); err = np.array([1., 1., 0.5])
     ll0 = wf.log_likelihood(np.zeros(3), err, 2.)
     assert np.isclose(wf.log_likelihood(R, err, 2.) - ll0, -0.5 * wf.chi2_eff(R, err, 2.))
+
+def test_profile_errors_match_curvature_and_handle_a_bound():
+    import pytest; pytest.importorskip('scipy')
+    rng = np.random.default_rng(7)
+    t = np.linspace(0, 1, 300)
+    y = 2. * t + 0.5 + 0.05 * rng.normal(size=t.size)
+    g = wf.fit_optimizer(lambda th: th[0] * t + th[1] - y, _nm, [1., 0.], 0.05, 1., fit_sigma_sys=False,
+                         param_names=['a', 'b'], profile={'a': np.linspace(1.6, 2.4, 161)})
+    _, ep, em, _, _ = g.results['a']
+    assert np.isclose(ep, np.sqrt(g.cov[0, 0]), rtol=0.02) and np.isclose(em, np.sqrt(g.cov[0, 0]), rtol=0.02)
+    # best value at a bound: the lower error reaches the bound, the upper one is the Delta chi2_eff = 1 crossing
+    v = np.linspace(0, 1, 101); prof = (v / 0.2)**2
+    assert wf.profile_errors(v, prof, 0.)[1] == 0. and np.isclose(wf.profile_errors(v, prof, 0.)[0], 0.2, atol=0.002)
