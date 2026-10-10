@@ -19,12 +19,12 @@ LINES = {  # name: (centre [A], equivalent width [A])
     'C': (4600., 0.25),
     'D': (4900., 0.30),
 }
-SIGMA0 = 10.     # km/s, intrinsic (known) Gaussian width of every line
+SIGMA0 = 10.     # km/s, intrinsic (thermal) Gaussian width of every line; known, except in the MCMC example
 HALF_WIDTH = 15. # A, half width of the window cut around each line
 CONT_EDGE = 6.   # A, pixels beyond this distance from the centre are line-free continuum
 
 # The kernels are applied in Fourier space through their analytic transforms, so that the model is a smooth function
-# of v sin i and v_macro (a kernel sampled on the velocity grid changes in steps, which breaks finite-difference
+# of the parameters (a kernel sampled on the velocity grid changes in steps, which breaks finite-difference
 # derivatives in the optimizer).
 
 def rotation_ft(vsini, eps=0.6):
@@ -41,19 +41,21 @@ def gaussian_ft(sigma):
     """Fourier transform of a unit-area Gaussian of width sigma."""
     return np.exp(-0.5 * (K * sigma)**2)
 
-def line_profile(lam, centre, ew, vsini, vmacro):
+def line_profile(lam, centre, ew, vsini, vmacro, sigma_th=SIGMA0):
     """Normalized flux of one line at wavelengths lam."""
-    # intrinsic absorption in velocity, normalized so that its integral over wavelength is ew
-    a = ew * C_KMS / centre * np.exp(-0.5 * (V / SIGMA0)**2) / (np.sqrt(2 * np.pi) * SIGMA0)
-    a = np.fft.irfft(np.fft.rfft(np.fft.ifftshift(a)) * rotation_ft(vsini) * gaussian_ft(vmacro), n=V.size)
-    return 1. - np.interp(C_KMS * (lam / centre - 1.), V, np.fft.fftshift(a), left=0., right=0.)
+    # absorption in velocity: a line of area ew (in wavelength) convolved with the thermal Gaussian, rotation and
+    # macroturbulence, all in Fourier space (F[0] = sum of the absorption = area / DV)
+    area = ew * C_KMS / centre
+    F = area / DV * gaussian_ft(abs(sigma_th)) * rotation_ft(vsini) * gaussian_ft(abs(vmacro))
+    a = np.fft.fftshift(np.fft.irfft(F, n=V.size))
+    return 1. - np.interp(C_KMS * (lam / centre - 1.), V, a, left=0., right=0.)
 
-def model(lam, groups, vsini, vmacro, names=tuple(LINES)):
+def model(lam, groups, vsini, vmacro, sigma_th=SIGMA0, names=tuple(LINES)):
     """All lines: lam and groups (line index of every pixel) as returned by make_data."""
     out = np.empty_like(lam)
     for j, n in enumerate(names):
         m = groups == j
-        out[m] = line_profile(lam[m], *LINES[n], vsini, vmacro)
+        out[m] = line_profile(lam[m], *LINES[n], vsini, vmacro, sigma_th)
     return out
 
 def correlated_noise(n, s, rng):
@@ -61,7 +63,8 @@ def correlated_noise(n, s, rng):
     k = np.exp(-0.5 * (np.arange(-5 * s, 5 * s + 1) / s)**2)
     return np.convolve(rng.normal(size=n + k.size), k / np.sqrt(np.sum(k**2)), mode='valid')[:n]
 
-def make_data(vsini=75., vmacro=20., vsini_D=150., snr=80., smooth_px=1.5, err_misquote=0.8, dlam=0.1, seed=42):
+def make_data(vsini=75., vmacro=20., vsini_D=150., snr=80., smooth_px=1.5, err_misquote=0.8, dlam=0.1, seed=42,
+              sigma_th=SIGMA0):
     """
     Synthetic spectrum: windows around lines A-D sampled every dlam A. Noise of 1/snr per pixel, correlated over
     ~smooth_px pixels (as after resampling or stacking). The quoted errors are err_misquote times the true noise (as
@@ -75,12 +78,12 @@ def make_data(vsini=75., vmacro=20., vsini_D=150., snr=80., smooth_px=1.5, err_m
         lam.append(x); groups.append(np.full(x.size, j))
         ref += [(c - HALF_WIDTH - 1, c - CONT_EDGE), (c + CONT_EDGE, c + HALF_WIDTH + 1)]
     lam, groups = np.concatenate(lam), np.concatenate(groups)
-    true = model(lam, groups, vsini, vmacro)
+    true = model(lam, groups, vsini, vmacro, sigma_th)
     D = groups == 3
-    true[D] = line_profile(lam[D], *LINES['D'], vsini_D, vmacro)
+    true[D] = line_profile(lam[D], *LINES['D'], vsini_D, vmacro, sigma_th)
     noise = np.concatenate([correlated_noise(np.sum(groups == j), smooth_px, rng) for j in range(len(LINES))]) / snr
     flux = true + noise
     err = np.full(lam.size, err_misquote / snr)
-    truth = {'vsini': vsini, 'vmacro': vmacro, 'vsini_D': vsini_D,
+    truth = {'vsini': vsini, 'vmacro': vmacro, 'vsini_D': vsini_D, 'sigma_th': sigma_th,
              'n_corr': 1 + 2 * np.sum(np.exp(-np.arange(1, 16)**2 / (4 * smooth_px**2)))}
     return dict(lam=lam, flux=flux, err=err, groups=groups, ref_ranges=ref, names=list(LINES), truth=truth)

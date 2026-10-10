@@ -115,8 +115,11 @@ correlated noise, errors quoted too small, and one deliberately inconsistent lin
 
 - [`grid_example.ipynb`](examples/grid_example.ipynb): the grid stream.
 - [`optimizer_example.ipynb`](examples/optimizer_example.ipynb): the optimizer stream, with profile scans.
+- [`mcmc_example.ipynb`](examples/mcmc_example.ipynb): MCMC with `wf.log_likelihood`, fitting thermal broadening
+  as well. It shows the degeneracy between thermal width and macroturbulence, and breaking it with a prior.
 
-Both compare the naive fit with wellfit. They need scipy and matplotlib.
+All three compare the naive fit with wellfit. They need scipy and matplotlib, and the MCMC example also needs emcee
+and corner.
 
 ## Tests
 
